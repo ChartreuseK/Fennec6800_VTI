@@ -9695,6 +9695,31 @@
     )
   )
 
+  (symbol (lib_id "power:VCC") (at 165.1 -3.81 90) (unit 1)
+    (in_bom yes) (on_board yes) (dnp no)
+    (uuid 611c5468-b762-4d05-b7da-220e9e21ee9f)
+    (property "Reference" "#PWR087" (at 168.91 -3.81 0)
+      (effects (font (size 1.27 1.27)) hide)
+    )
+    (property "Value" "VCC" (at 156.21 -3.81 90)
+      (effects (font (size 1.27 1.27)) (justify right))
+    )
+    (property "Footprint" "" (at 165.1 -3.81 0)
+      (effects (font (size 1.27 1.27)) hide)
+    )
+    (property "Datasheet" "" (at 165.1 -3.81 0)
+      (effects (font (size 1.27 1.27)) hide)
+    )
+    (pin "1" (uuid bf9f6110-759f-4a28-9379-f54c8a8bc32b))
+    (instances
+      (project "FennecVTI"
+        (path "/07f4ff84-bbcc-43a3-8988-f6a9fc4547d7"
+          (reference "#PWR087") (unit 1)
+        )
+      )
+    )
+  )
+
   (symbol (lib_id "Connector_Generic:Conn_01x14") (at 337.82 135.89 0) (unit 1)
     (in_bom yes) (on_board yes) (dnp no)
     (uuid 6194f7bf-bce0-4164-ac31-119018ddce9f)
