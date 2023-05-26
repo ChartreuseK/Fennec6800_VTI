@@ -1,0 +1,359 @@
+ AS V1.42 Beta [Bld 231] - Source File vtirom.asm - Page 1 - 2023-05-26 03:09:35 AM
+
+
+       1/       0 :                     ; Fennec 6800 VTI - Option ROM v0.1
+       2/       0 :                     ; Provides a video terminal interface for the Fennec 6800 instead of 
+       3/       0 :                     ; using a serial terminal hooked up to UART0 on the Fennec.
+       4/       0 :                     ; Outputs over composite video or TTL video (mono but 15.7kHz)
+       5/       0 :                     ;
+       6/       0 :                     ; Input is provided via a parallel ASCII keyboard over a DIP14 socket
+       7/       0 :                     ; or DA15 port, and processed through a 6820/6821/6520/6521 PIA
+       8/       0 :                     ; 
+       9/       0 :                     ; This ROM installs itself as the default console, while swapping
+      10/       0 :                     ; the default AUX device to UART0 instead of UART1
+      11/       0 :                     ;-----------------------------------------------------------------------
+      12/       0 :                     	CPU 6800
+      13/       0 :                     	
+      14/       0 : =$8000               VTIBASE EQU $8000	; EXP6 left most jumper
+      15/       0 :                     ; 9000 for EXP5, A000 for 4, B000 for 3, C000 for 2, D000 for 1
+      16/       0 :                     
+      17/       0 : =$8000               VIDRAM	EQU VTIBASE
+      18/       0 : =$8800               ROMBASE EQU VTIBASE+$800	; Upper 2kB of EXP6
+      19/       0 :                     ; 6845 VDP ports
+      20/       0 : =$87F8               CRTADDR	EQU VTIBASE+$7F8	; Lowest mirror
+      21/       0 : =$87F9               CRTDATA	EQU VTIBASE+$7F9
+      22/       0 :                     ; 6820 PIA ports
+      23/       0 : =$8FF8               PIABASE EQU VTIBASE+$FF8	; Lowest mirror
+      24/       0 : =$8FF8               PIAORA	EQU PIABASE+0		; ORA/INA/DDRA
+      25/       0 : =$8FF9               PIACRA	EQU PIABASE+1
+      26/       0 : =$8FFA               PIAORB	EQU PIABASE+2		; ORB/INB/DDRB
+      27/       0 : =$8FFB               PIACRB	EQU PIABASE+3
+      28/       0 :                     
+      29/       0 :                     ; Peripherals on mainboard 
+      30/       0 : =$EFF0               UART1	EQU $EFF0
+      31/       0 : =$EFF2               UART2	EQU $EFF2
+      32/       0 :                     
+      33/       0 :                     ; Zero page VTI addresses
+      34/       0 : =$40                 VTIVAR	EQU $0040		; Base for our addresses
+      35/       0 : =$40                 SAVEX	EQU VTIVAR+0	; w Place to save word
+      36/       0 : =$42                 SCRADDR	EQU VTIVAR+2	; w Screen address pointer
+      37/       0 : =$44                 SCRX	EQU VTIVAR+4	; b Cursor X pos
+      38/       0 : =$45                 SCRY	EQU VTIVAR+5	; b Cursor Y pos
+      39/       0 :                     
+      40/       0 :                     ;-----------------------------------------------------------------------
+      41/       0 :                     ; Controllable routines in ROM
+      42/       0 :                     ;  - expect no reg preserved, result if any in A
+      43/       0 : =$C                  CONTR	EQU $000C	; Start of controllable routines
+      44/       0 :                     
+      45/       0 : =$C                  CONIN	EQU CONTR	; 3 - JMP to GETC routine for console
+      46/       0 : =$F                  CONOUT	EQU CONIN+3	; 3 - JMP TO PUTC routine for console
+      47/       0 : =$12                 CONINNB	EQU CONOUT+3	; 3 - JMP to GETC (non-blocking) for console
+      48/       0 :                     
+      49/       0 : =$15                 AUXIN	EQU CONINNB+3	; 3 - JMP to GETC routine for aux 
+      50/       0 : =$18                 AUXOUT	EQU AUXIN+3	; 3 - JMP TO PUTC routine for aux 
+      51/       0 : =$1B                 AUXINNB	EQU AUXOUT+3	; 3 - JMP to GETC (non-blocking) for aux
+      52/       0 :                     
+      53/       0 : =$1E                 DEVIN	EQU AUXINNB+3	; 3 - JMP to device routine GETC
+      54/       0 : =$21                 DEVOUT	EQU DEVIN+3	; 3 - JMP to device routine PUTC
+      55/       0 : =$24                 DEVINNB	EQU DEVOUT+3	; 3 - JMP to device routine GETC (non-blocking)
+      56/       0 :                     			;  Device routines take device # in B
+      57/       0 :                     			;  0 = console, 1 = uart a, 2 = uart b, 
+      58/       0 :                     			;  3+ rom or user defined
+      59/       0 : =$27                 CONTRE	EQU DEVINNB+3	; End of controllable routines
+      60/       0 :                     ;-----------------------------------------------------------------------
+ AS V1.42 Beta [Bld 231] - Source File vtirom.asm - Page 2 - 2023-05-26 03:09:35 AM
+
+
+      61/       0 :                     
+      62/    8800 :                     	ORG ROMBASE
+      63/    8800 : F1 0F               	DW $F10F	; Flo(o)f signature for a bootable ROM
+      64/    8802 : 56 54 49 52 4F 4D   	DB "VTIROM 0.1"	; 10 character name
+             8808 : 20 30 2E 31       
+      65/    880C : 00                  	DB 0		; Null terminator
+      66/    880D :                     	; 3 bytes reserved for future use
+      67/    8810 :                     	ORG ROMBASE+16	; Entry point at 16 bytes in
+      68/    8810 :                     START
+      69/    8810 : 7E 88 2B            	JMP ENTER	; Jump over function table
+      70/    8813 :                     FTABLE	; Table of functions with a static address for user programs
+      71/    8813 : 7E 88 38            	JMP INITVDP	; Reset VDP
+      72/    8816 : 7E 88 3B            	JMP LOADVDP	; Load VDP registers with custom table
+      73/    8819 : 7E 88 E4            	JMP CLRSCR
+      74/    881C : 7E 88 D5            	JMP SCROLL
+      75/    881F : 7E 88 F5            	JMP HOME
+      76/    8822 : 7E 88 5B            	JMP GETC
+      77/    8825 : 7E 88 66            	JMP GETCNB
+      78/    8828 : 7E 88 74            	JMP PUTC
+      79/    882B :                     	
+      80/    882B :                     ENTER
+      81/    882B :                     	; We can assume a usable stack from the monitor
+      82/    882B : BD 88 38            	JSR INITVDP		
+      83/    882E : BD 88 E4            	JSR CLRSCR
+      84/    8831 : BD 88 F5            	JSR HOME
+      85/    8834 : BD 88 4B            	JSR INSTALL
+      86/    8837 : 39                  	RTS		; Return to monitor
+      87/    8838 :                     	;---------------------------------------------------------------
+      88/    8838 :                     
+      89/    8838 :                     
+      90/    8838 :                     ; Copy VDP register table to VDP
+      91/    8838 :                     INITVDP
+      92/    8838 : CE 89 21            	LDX #CRTTAB
+      93/    883B :                     LOADVDP			; (Call here to load with other X)
+      94/    883B : 5F                  	CLRB
+      95/    883C : F7 87 F8            ILOOP	STAB CRTADDR	; B is current address
+      96/    883F : A6 00               	LDAA 0,X	; Value from table
+      97/    8841 : B7 87 F9            	STAA CRTDATA
+      98/    8844 : 08                  	INX
+      99/    8845 : 5C                  	INCB
+     100/    8846 : C1 10               	CMPB #16	; 16 registers to fill
+     101/    8848 : 26 F2               	BNE ILOOP
+     102/    884A : 39                  	RTS
+     103/    884B :                     
+     104/    884B :                     ; Install handlers into monitor
+     105/    884B :                     INSTALL
+     106/    884B : CE 88 5B            	LDX #GETC
+     107/    884E : DF 0D               	STX CONIN+1	; +1 to skip over JMP opcode
+     108/    8850 : CE 88 74            	LDX #PUTC
+     109/    8853 : DF 10               	STX CONOUT+1
+     110/    8855 : CE 88 66            	LDX #GETCNB
+     111/    8858 : DF 13               	STX CONINNB+1
+     112/    885A : 39                  	RTS
+     113/    885B :                     
+     114/    885B :                     ;-----------------------------------------------------------------------
+     115/    885B :                     ; Get character from console
+     116/    885B :                     ; TODO change to parallel keyboard
+     117/    885B : C6 01               GETC    LDAB #$01	; Receive data full
+     118/    885D : F5 EF F0            .L      BITB UART1      
+     119/    8860 : 27 FB               	BEQ .L
+ AS V1.42 Beta [Bld 231] - Source File vtirom.asm - Page 3 - 2023-05-26 03:09:35 AM
+
+
+     120/    8862 : B6 EF F1            	LDAA UART1+1
+     121/    8865 : 39                  	RTS
+     122/    8866 :                     	
+     123/    8866 :                     ; Non-blocking GETC
+     124/    8866 : 86 00               GETCNB	LDAA #0		; 2 - Default return
+     125/    8868 : C6 01               	LDAB #$01	; 2 - 
+     126/    886A : F5 EF F0            	BITB UART1	; 4 -
+     127/    886D : 27 03               	BEQ .E		; 4 -
+     128/    886F : B6 EF F1            	LDAA UART1+1	; 4 -
+     129/    8872 : 4D                  .E	TST A		; 2 - Set flags based on A
+     130/    8873 : 39                  	RTS		; 5 -
+     131/    8874 :                     
+     132/    8874 :                     ;-----------------------------------------------------------------------
+     133/    8874 :                     ; Print character in A to the screen (preserve X)
+     134/    8874 :                     PUTC
+     135/    8874 : 36                  	PSHA
+     136/    8875 : 37                  	PSHB
+     137/    8876 : DF 40               	STX SAVEX	; Preserve X register
+     138/    8878 : DE 42               	LDX SCRADDR	; Get screen pointer (assume up to date)
+     139/    887A : 81 0D               	CMPA #'\r'	; Carriage return
+     140/    887C : 27 2F               	BEQ .CR
+     141/    887E : 81 0A               	CMPA #'\n'	; Newline
+     142/    8880 : 27 31               	BEQ .NL
+     143/    8882 : 81 08               	CMPA #'\b'	; Backspace
+     144/    8884 : 27 3E               	BEQ .BS
+     145/    8886 : 81 09               	CMPA #'\t'	; (Horizontal) Tab
+     146/    8888 : 27 11               	BEQ .TAB
+     147/    888A :                     	; Otherwise assume printable character
+     148/    888A : A7 00               	STAA 0,X	; Store to the screen
+     149/    888C : 7C 00 44            	INC SCRX	; Move to next character in line
+     150/    888F : 96 44               	LDAA SCRX	; Check current X pos
+     151/    8891 : 81 40               	CMPA #64	; If past screen width?
+     152/    8893 : 26 38               	BNE .END	
+     153/    8895 : 86 00               	LDAA #0		; Hit width of screen, go to next line
+     154/    8897 : 97 44               	STAA SCRX	; Return to 0 	JMP S0OUT
+     155/    8899 : 20 18               	BRA .NL		; Insert newline
+     156/    889B : 96 44               .TAB	LDAA SCRX	; 
+     157/    889D : 8B 08               	ADDA #8		; Add 8 to force going to next tabstop
+     158/    889F : 84 F8               	ANDA #$F8	; Round down to the next multiple of 8
+     159/    88A1 : 97 44               	STAA SCRX	
+     160/    88A3 : 81 40               	CMPA #64	; IfJSR GETDISP past screen width?
+     161/    88A5 : 26 26               	BNE .END
+     162/    88A7 : 86 00               	LDAA #0		; Hit width of screen? go to next line
+     163/    88A9 : 97 44               	STAA SCRX	; Return to 0
+     164/    88AB : 20 06               	BRA .NL		; Newline
+     165/    88AD : 86 00               .CR	LDAA #0		; Simply return to start of line
+     166/    88AF : 97 44               	STAA SCRX	; Set X pos to 0
+     167/    88B1 : 20 1A               	BRA .END
+     168/    88B3 : 7C 00 45            .NL	INC SCRY	; Try and go to the next line
+     169/    88B6 : 96 45               	LDAA SCRY	
+     170/    88B8 : 81 18               	CMPA #24	; If past screen height?
+     171/    88BA : 26 11               	BNE .END	
+     172/    88BC : 7A 00 45            	DEC SCRY	; Return back to last line of screen
+     173/    88BF : BD 88 D5            	JSR SCROLL	; Scroll the screen up one line
+     174/    88C2 : 20 09               	BRA .END
+     175/    88C4 : 96 44               .BS	LDAA SCRX	; Are we at the start of a line?
+     176/    88C6 : 27 05               	BEQ .END	; If so nothing to backspace
+     177/    88C8 : 7A 00 44            	DEC SCRX	; Otherwise move back one pos
+     178/    88CB : 20 00               	BRA .END
+     179/    88CD : BD 88 FE            .END	JSR GETDISP	; Recalculate DISP pointer
+ AS V1.42 Beta [Bld 231] - Source File vtirom.asm - Page 4 - 2023-05-26 03:09:35 AM
+
+
+     180/    88D0 : DE 40               	LDX SAVEX	; Restore X
+     181/    88D2 : 33                  	PULB
+     182/    88D3 : 32                  	PULA
+     183/    88D4 : 39                  	RTS
+     184/    88D5 :                     
+     185/    88D5 :                     ;-----------------------------------------------------------------------
+     186/    88D5 :                     ; Scroll screen one line
+     187/    88D5 :                     SCROLL
+     188/    88D5 : CE 80 00            	LDX #VIDRAM
+     189/    88D8 : A6 40               .LOOP	LDAA 64,X	; Read from next line
+     190/    88DA : A7 00               	STAA 0,X	; to current line
+     191/    88DC : 08                  	INX		; Go from top to bottom till we hit the end
+     192/    88DD : 8C 85 C0            	CPX #VIDRAM+(64*23)	; Start of last line of screen
+     193/    88E0 : 26 F6               	BNE .LOOP
+     194/    88E2 :                     	; Now clear last line
+     195/    88E2 : 20 06               	BRA CLREND
+     196/    88E4 :                     ;-----------------------------------------------------------------------
+     197/    88E4 :                     ; Clear screen (fill with spaces)
+     198/    88E4 :                     CLRSCR
+     199/    88E4 : BD 88 F5            	JSR HOME	; Home cursor
+     200/    88E7 : CE 80 00            	LDX #VIDRAM
+     201/    88EA :                     CLREND	; Clear to end of screen starting at X
+     202/    88EA : 86 20               	LDAA #' '	; Space to clear with
+     203/    88EC : A7 00               .LOOP	STAA 0,X
+     204/    88EE : 08                  	INX
+     205/    88EF : 8C 86 00            	CPX #VIDRAM+(64*24)
+     206/    88F2 : 26 F8               	BNE .LOOP
+     207/    88F4 : 39                  	RTS
+     208/    88F5 :                     	
+     209/    88F5 :                     ;-----------------------------------------------------------------------
+     210/    88F5 :                     ; Home cursor (0,0)
+     211/    88F5 :                     HOME
+     212/    88F5 : 86 00               	LDAA #0
+     213/    88F7 : 97 44               	STAA SCRX
+     214/    88F9 : 97 45               	STAA SCRY
+     215/    88FB : 7E 88 FE            	JMP GETDISP
+     216/    88FE :                     
+     217/    88FE :                     ;-----------------------------------------------------------------------
+     218/    88FE :                     ; Convert SCRX, SCRY to screen memory address in SCRADDR
+     219/    88FE :                     GETDISP
+     220/    88FE : 96 45               	LDAA SCRY
+     221/    8900 : 46                  	RORA		; Low 2 bits to upper 2 bits of addr 
+     222/    8901 : 46                  	RORA		; 3x because ROR goes through carry
+     223/    8902 : 46                  	RORA
+     224/    8903 : 84 C0               	ANDA #$C0	; Low 2 bits of addr in upper 2
+     225/    8905 : 9A 44               	ORAA SCRX	; Or in x position (6-bits = 64)
+     226/    8907 : 97 43               	STAA SCRADDR+1	; Low byte of screen address
+     227/    8909 : C6 0F               	LDAB #15	; Cursor position register (low byte) in VDP
+     228/    890B : F7 87 F8            	STAB CRTADDR	
+     229/    890E : B7 87 F9            	STAA CRTDATA	; Set VDP cursor
+     230/    8911 : 96 45               	LDAA SCRY	; Now get remaining 3 bits of Y addr
+     231/    8913 : 44                  	LSRA		
+     232/    8914 : 44                  	LSRA		
+     233/    8915 : 5A                  	DECB		; high byte cursor position register
+     234/    8916 : F7 87 F8            	STAB CRTADDR
+     235/    8919 : B7 87 F9            	STAA CRTDATA	; Set VDP cursor (high)
+     236/    891C : 8A 80               	ORAA #(VIDRAM>>8)	; VIDRAM base addr
+     237/    891E : 97 42               	STAA SCRADDR	; Upper byte of pointer to screen complete
+     238/    8920 : 39                  	RTS
+     239/    8921 :                     
+ AS V1.42 Beta [Bld 231] - Source File vtirom.asm - Page 5 - 2023-05-26 03:09:35 AM
+
+
+     240/    8921 :                     
+     241/    8921 :                     ;-----------------------------------------------------------------------
+     242/    8921 :                     ; 12MHz dot clock
+     243/    8921 :                     ; "NTSC" (B&W) single field progressive "mode"
+     244/    8921 :                     ; 15,720Hz horizontal (approx)
+     245/    8921 :                     ; 60Hz vertical refresh
+     246/    8921 :                     ; 8x8 font
+     247/    8921 :                     ; 64x24
+     248/    8921 :                     ; 
+     249/    8921 :                     ; H-total 95 chars (15,789Hz horizontal)
+     250/    8921 :                     ; H-displayed 64 chars = 42.6us                              51.2 ideal
+     251/    8921 :                     ; H-sync pos = 64chars + 8 +  1.5us =~ 82 chars 1.33us front  1.5 ideal
+     252/    8921 :                     ; H-sync width = 4.7us =~ 7 chars = 4.666us sync              4.7 ideal
+     253/    8921 :                     ; Back porch of 95 chars - 89 chars = 6 chars + 8 = 4us       6.2 ideal
+     254/    8921 :                     ;-----------------------------------------------------------------------
+     255/    8921 :                     ; 1 character (8 pixels) = 666ns
+     256/    8921 :                     ;-----------------------------------------------------------------------
+     257/    8921 :                     ; V-total lines 262 (262.5 but sssh) 
+     258/    8921 :                     ; Characters are 8 lines high
+     259/    8921 :                     ; VTotal = 32.75 -> 31 (subtract one and lose fraction)
+     260/    8921 :                     ; VAdjust = 0.75 * 8 = 6 scanlines
+     261/    8921 :                     ; VDisplayed = 24 (visible rows)  (Up to 28/29 works)
+     262/    8921 :                     ; VSyncPos = 30
+     263/    8921 :                     ; Non interlaced
+     264/    8921 :                     ; 8 scalines per char (-1 = 7)
+     265/    8921 :                     ; Cursor start at 0, blink at 1/32 field rate (5&6 set)
+     266/    8921 :                     CRTTAB
+     267/    8921 : 5F 40               	DB	95, 64		; R0/R1 H-Total and H-displayed
+     268/    8923 : 4C 07               	DB	76, 7		; R2/R3 HSync Pos and HSync Width
+     269/    8925 : 1F 06               	DB	31, 6		; R4/R5 VTotal and VTotal Adjust
+     270/    8927 : 18 1B               	DB	24, 27		; R6/R7 VDisplayed and VSync Pos
+     271/    8929 : 00 07               	DB	$00, 7		; R8/R9 Interlace and Max Scan Line
+     272/    892B : 66 07               	DB	$66, 7		; R10/R11 Cursor start & end
+     273/    892D : 00 00               	DW	$0000		; R12/13 Start address
+     274/    892F : 00 00               	DW	$0000		; R14/15 Cursor address
+     275/    8931 :                     	
+     276/    8FFF :                     	ORG ROMBASE+$7FF
+     277/    8FFF : FF                  	DB	$FF
+     278/    9000 :                     
+     279/    9000 :                     	END
+ AS V1.42 Beta [Bld 231] - Source File vtirom.asm - Page 6 - 2023-05-26 03:09:35 AM
+
+
+  Symbol Table (* = unused):
+  --------------------------
+
+*ARCHITECTURE :                                      "x86_64-unknown-linux" - |
+ AUXIN :                         15 - |  AUXINNB :                       1B - |
+ AUXOUT :                        18 - | *CASESENSITIVE :                  0 - |
+ CLREND :                      88EA C |  CLREND.LOOP :                 88EC C |
+ CLRSCR :                      88E4 C | *COMPMODE :                       0 - |
+ CONIN :                          C - |  CONINNB :                       12 - |
+ CONOUT :                         F - | *CONSTPI :        3.141592653589793 - |
+ CONTR :                          C - | *CONTRE :                        27 - |
+ CRTADDR :                     87F8 - |  CRTDATA :                     87F9 - |
+ CRTTAB :                      8921 C | *DATE :                "2023-05-26" - |
+ DEVIN :                         1E - |  DEVINNB :                       24 - |
+ DEVOUT :                        21 - |  ENTER :                       882B C |
+*FALSE :                          0 - | *FTABLE :                      8813 C |
+*FULLPMMU :                       1 - |  GETC :                        885B C |
+ GETC.L :                      885D C |  GETCNB :                      8866 C |
+ GETCNB.E :                    8872 C |  GETDISP :                     88FE C |
+*HAS64 :                          1 - | *HASFPU :                         0 - |
+*HASPMMU :                        0 - |  HOME :                        88F5 C |
+ ILOOP :                       883C C |  INITVDP :                     8838 C |
+ INSTALL :                     884B C | *INSUPMODE :                      0 - |
+*LISTON :                         1 - |  LOADVDP :                     883B C |
+*MACEXP :                         7 - | *MOMCPU :                      6800 - |
+*MOMCPUNAME :                "6800" - | *NESTMAX :                      100 - |
+*PADDING :                        0 - |  PIABASE :                     8FF8 - |
+*PIACRA :                      8FF9 - | *PIACRB :                      8FFB - |
+*PIAORA :                      8FF8 - | *PIAORB :                      8FFA - |
+ PUTC :                        8874 C |  PUTC.BS :                     88C4 C |
+ PUTC.CR :                     88AD C |  PUTC.END :                    88CD C |
+ PUTC.NL :                     88B3 C |  PUTC.TAB :                    889B C |
+*RELAXED :                        0 - |  ROMBASE :                     8800 - |
+ SAVEX :                         40 - |  SCRADDR :                       42 - |
+ SCROLL :                      88D5 C |  SCROLL.LOOP :                 88D8 C |
+ SCRX :                          44 - |  SCRY :                          45 - |
+*START :                       8810 C | *TIME :               "03:09:35 AM" - |
+*TRUE :                           1 - |  UART1 :                       EFF0 - |
+*UART2 :                       EFF2 - | *VERSION :                     142F - |
+ VIDRAM :                      8000 - |  VTIBASE :                     8000 - |
+ VTIVAR :                        40 - |
+
+     74 symbols
+     29 unused symbols
+
+ AS V1.42 Beta [Bld 231] - Source File vtirom.asm - Page 7 - 2023-05-26 03:09:35 AM
+
+
+  Code Pages:
+  ----------
+
+STANDARD (0 changed characters)
+
+1 code page
+
+0.01 seconds assembly time
+
+    280 lines source file
+      2 passes
+      0 errors
+      0 warnings
