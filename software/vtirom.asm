@@ -80,12 +80,23 @@ FTABLE	; Table of functions with a static address for user programs
 ENTER
 	; We can assume a usable stack from the monitor
 	JSR INITVDP		
+	JSR INITKBD
 	JSR CLRSCR
 	JSR HOME
 	JSR INSTALL
 	RTS		; Return to monitor
 	;---------------------------------------------------------------
 
+INITKBD
+	LDAA #00	; Select DDR
+	STAA PIACRA
+	STAA PIAORA	; All 8 pins on A input
+	LDAA #07	; Active high strobe,
+			; IRQ enabled, 
+			; output reg sel
+	STAA PIACRA
+	LDAA PIAORA	; Read from port to clear flag
+	RTS
 
 ; Copy VDP register table to VDP
 INITVDP
@@ -103,22 +114,23 @@ ILOOP	STAB CRTADDR	; B is current address
 
 ; Install handlers into monitor
 INSTALL
-	LDX #GETC
-	STX CONIN+1	; +1 to skip over JMP opcode
+	;LDX #GETC
+	;STX CONIN+1	; +1 to skip over JMP opcode
 	LDX #PUTC
 	STX CONOUT+1
-	LDX #GETCNB
-	STX CONINNB+1
+	;LDX #GETCNB
+	;STX CONINNB+1
 	RTS
 
 ;-----------------------------------------------------------------------
 ; Get character from console
 ; TODO change to parallel keyboard
-GETC    LDAB #$01	; Receive data full
-.L      BITB UART1      
-	BEQ .L
-	LDAA UART1+1
+GETC    LDAA #$80	; Check for CA1 interrupt flag
+.L	BITA PIACRA	
+	BEQ .L		; Wait till we get the strobe
+	LDAA PIAORA	; Read in the character and clear flag
 	RTS
+	
 	
 ; Non-blocking GETC
 GETCNB	LDAA #0		; 2 - Default return
